@@ -1,90 +1,82 @@
 import streamlit as st
-import google.generativeai as genai
-import wolframalpha
+import requests
 import matplotlib.pyplot as plt
 import numpy as np
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_community.vectorstores import Chroma
 
-# --- 1. SETUP & CONFIG ---
-st.set_page_config(page_title="AI Calculus Tutor", layout="wide")
+# --- 1. API CONFIGURATION ---
+GEMINI_API_KEY = st.secrets["GEMINI_KEY"]
+WOLFRAM_APP_ID = st.secrets["WOLFRAM_ID"]
 
-# Get keys from Streamlit Secrets (for Cloud deployment)
-GEMINI_KEY = st.secrets["GEMINI_KEY"]
-WOLFRAM_ID = st.secrets["WOLFRAM_ID"]
+# Gemini REST Endpoint
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
 
-# Initialize Engines
-genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel('gemini-2.0-flash')
-wa_client = wolframalpha.Client(WOLFRAM_ID)
-embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GEMINI_KEY)
+# Wolfram Alpha Short Answers Endpoint
+WOLFRAM_URL = "http://api.wolframalpha.com/v1/result"
 
-# --- 2. THE LIBRARIAN (Book Search) ---
-@st.cache_resource
-def index_textbook():
-    try:
-        loader = PyPDFLoader("data/textbook.pdf")
-        pages = loader.load_and_split()
-        return Chroma.from_documents(pages, embeddings)
-    except:
-        st.warning("Textbook PDF not found in data/ folder. Using general knowledge mode.")
-        return None
+# --- 2. HELPER FUNCTIONS ---
 
-vector_db = index_textbook()
-
-# --- 3. TEACHING MODES ---
-def get_socratic_response(user_input, context=""):
-    system_prompt = f"""
-    You are a Socratic Calculus Tutor. 
-    Reference the book content provided: {context}
+def call_gemini(prompt):
+    """Calls the Gemini API using the requests library."""
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }]
+    }
+    headers = {"Content-Type": "application/json"}
     
-    RULES:
-    - Explain using real-world analogies (speedometers, mountains, leaky buckets).
-    - NEVER give the final numerical answer immediately.
-    - Ask a follow-up question to check the student's logic.
-    - Use LaTeX for math like $\int x^2 dx$.
-    """
-    response = model.generate_content(system_prompt + "\nStudent: " + user_input)
-    return response.text
+    response = requests.post(GEMINI_URL, json=payload, headers=headers)
+    
+    if response.status_code == 200:
+        return response.json()['candidates'][0]['content']['parts'][0]['text']
+    else:
+        return f"Error: {response.status_code} - {response.text}"
 
-# --- 4. THE INTERFACE ---
-st.title("🎓 Your Socratic Calculus Tutor")
-st.sidebar.markdown("### 📊 Learning Progress")
-st.sidebar.progress(35) # Manual example
+def call_wolfram(query):
+    """Calls Wolfram Alpha using a GET request."""
+    params = {
+        "i": query,
+        "appid": WOLFRAM_APP_ID
+    }
+    response = requests.get(WOLFRAM_URL, params=params)
+    
+    if response.status_code == 200:
+        return response.text
+    return "Could not compute math."
 
-# Chat History
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# --- 3. THE INTERFACE ---
+st.title("🎓 Requests-Powered Calculus Tutor")
 
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+if "history" not in st.session_state:
+    st.session_state.history = []
 
-# User Input
-if prompt := st.chat_input("Ask me about the Big Picture of Calculus..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
+# Display Chat
+for chat in st.session_state.history:
+    with st.chat_message(chat["role"]):
+        st.markdown(chat["content"])
+
+# User Input Loop
+if user_input := st.chat_input("Teach me about derivatives..."):
+    st.session_state.history.append({"role": "user", "content": user_input})
+    
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.markdown(user_input)
 
-    # Search book for context
-    book_context = ""
-    if vector_db:
-        docs = vector_db.similarity_search(prompt, k=2)
-        book_context = "\n".join([d.page_content for d in docs])
-
-    # Get Tutor Response
+    # Brain Logic
     with st.chat_message("assistant"):
-        response_text = get_socratic_response(prompt, book_context)
-        st.markdown(response_text)
+        # We tell the AI to behave Socratically
+        socratic_prompt = f"""
+        Act as a Socratic Calculus Teacher. 
+        Explain concepts using real-world analogies. 
+        User asks: {user_input}
+        """
         
-        # Automatic Graphing Logic
-        if "graph" in prompt.lower() or "plot" in prompt.lower():
-            x = np.linspace(-10, 10, 100)
-            y = x**2 # Simplified example; in pro version, LLM extracts formula
-            fig, ax = plt.subplots()
-            ax.plot(x, y)
-            ax.set_title("Visualizing your Concept")
-            st.pyplot(fig)
+        # Call Gemini via Requests
+        ai_response = call_gemini(socratic_prompt)
+        st.markdown(ai_response)
+        
+        # Optional: Double check math with Wolfram if needed
+        if "calculate" in user_input.lower():
+            math_truth = call_wolfram(user_input)
+            st.info(f"Verified Math: {math_truth}")
 
-    st.session_state.messages.append({"role": "assistant", "content": response_text})
+    st.session_state.history.append({"role": "assistant", "content": ai_response})
