@@ -1,11 +1,5 @@
 streamlit
-google-generativeai
-wolframalpha
+requests
 matplotlib
 numpy
 pypdf
-langchain
-langchain-google-genai
-chromadb
-google-genai
-requests
