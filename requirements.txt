@@ -1,5 +1,3 @@
-google-generativeai
-wolframalpha
-matplotlib
-numpy
 streamlit
+google-genai
+requests
