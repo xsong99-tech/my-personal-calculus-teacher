@@ -3,62 +3,51 @@ import requests
 import xml.etree.ElementTree as ET
 from google import genai
 
-# --- 1. SETUP ---
+# --- 1. CONFIGURATION ---
+# These must be set in your Streamlit Cloud "Secrets" tab
 WOLFRAM_ID = st.secrets["WOLFRAM_ID"]
 GEMINI_KEY = st.secrets["GEMINI_KEY"]
 client = genai.Client(api_key=GEMINI_KEY)
 
-def get_wolfram_math(query):
-    url = f"https://api.wolframalpha.com/v2/query?input={query}&appid={WOLFRAM_ID}&format=plaintext"
+# --- 2. WOLFRAM ENGINE (THE CALCULATOR) ---
+def get_wolfram_steps(query):
+    """Bypasses LLM math errors by fetching real steps from Wolfram."""
+    url = f"https://api.wolframalpha.com/v2/query?input=show+steps+{query}&appid={WOLFRAM_ID}&format=plaintext"
     try:
-        root = ET.fromstring(requests.get(url).text)
-        if root.get('success') == 'true':
-            # Look for common calculus pod titles
-            for pod in root.findall('.//pod'):
-                if pod.get('title') in ['Derivative', 'Result', 'Indefinite integral', 'Limit']:
-                    return pod.find('.//plaintext').text
-    except:
-        return None
-    return None
+        response = requests.get(url, timeout=10)
+        root = ET.fromstring(response.text)
+        steps = []
+        for pod in root.findall('.//pod'):
+            title = pod.get('title', '').lower()
+            if 'step-by-step' in title or 'solution' in title:
+                text = pod.find('.//plaintext').text
+                if text: steps.append(text)
+        return "\n".join(steps) if steps else "No automated steps found."
+    except Exception:
+        return "Verification engine offline."
 
-# --- 2. STREAMLIT UI ---
-st.title("Socratic Calculus Tutor 🎓")
-st.write("I won't give you the answer, but I'll help you find it.")
+# --- 3. UI LAYOUT ---
+st.set_page_config(page_title="Socratic Calc Tutor", page_icon="🎓")
+st.title("🎓 Socratic Calculus Agent")
+st.caption("Grounded in OpenStax Calculus Vol 1 & Wolfram Alpha")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Display chat history
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-# --- 3. TUTOR LOGIC ---
-if prompt := st.chat_input("Ask a calculus question..."):
+# --- 4. THE TUTORING LOOP ---
+if prompt := st.chat_input("I'm stuck on the Chain Rule..."):
+    # Store user message
     st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    # Step A: Get ground-truth math from Wolfram
-    correct_math = get_wolfram_math(prompt)
-
-    # Step B: Generate Socratic response with Gemini
-    with st.chat_message("assistant"):
-        system_instruction = f"""
-        You are a Socratic Calculus Tutor. 
-        The student's question is: {prompt}
-        The verified mathematical answer is: {correct_math}
-        
-        INSTRUCTIONS:
-        1. Never reveal the verified answer directly.
-        2. Use the verified answer to spot if the student is wrong.
-        3. Ask a leading question about a rule (Power Rule, Chain Rule, etc.) to help them.
-        """
-        
-        response = client.models.generate_content(
-            model="gemini-2.0-flash", 
-            contents=[system_instruction, prompt]
-        )
-        
-        st.markdown(response.text)
-        st.session_state.messages.append({"role": "assistant", "content": response.text})
+    
+    # Background: Get the "Correct" steps
+    hidden_truth = get_wolfram_steps(prompt)
+    
+    # Socratic System Instruction
+    system_prompt = f"""
+    ROLE: You are the 'OpenStax Calculus Tutor'.
+    INTERNAL VERIFICATION (DO NOT SHOW USER): {hidden_truth}
+    
+    YOUR GOAL: 
+    - Lead the student to the answer using Socratic questioning.
+    - Never give the final answer or full steps at once.
+    - Use OpenStax Vol 1 terminology (e.g.,
