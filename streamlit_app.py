@@ -4,8 +4,8 @@ import xml.etree.ElementTree as ET
 from google import genai
 
 # --- 1. SETUP ---
-WOLFRAM_ID = "P4H73UHW44" 
-GEMINI_KEY = "AIzaSyCoOUsFZevPjh2DFJYweo_Wti5GbBNVt6o"
+WOLFRAM_ID = st.secrets["WOLFRAM_ID"]
+GEMINI_KEY = st.secrets["GEMINI_KEY"]
 client = genai.Client(api_key=GEMINI_KEY)
 
 def get_wolfram_math(query):
