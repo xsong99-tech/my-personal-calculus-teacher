@@ -4,57 +4,41 @@ import io
 import time
 from gtts import gTTS
 
-# --- 1. CONFIGURATION & SYLLABUS ---
-# Ensure GEMINI_KEY is set in Streamlit Cloud Secrets
+# --- 1. CONFIGURATION ---
 GEMINI_KEY = st.secrets["GEMINI_KEY"]
 API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
 
 SYLLABUS = """
-You are 'Professor Gemini', a Socratic Calculus Teacher following the OpenStax syllabus.
-MISSION: Lead the student through Calculus 1, 2, and 3.
-RULES:
-1. Use Socratic questioning. Never give the full answer immediately.
-2. Ground explanations in REAL WORLD use (e.g., Engineering, Physics, AI).
-3. Visuals: Use the tag [IMAGE: description] for graphs/diagrams.
-4. Videos: Use the tag [VIDEO: topic] for animations.
-5. Keep language concise for voice reading.
+You are 'Professor Gemini', a Socratic Calculus Teacher. 
+Ground your lessons in OpenStax Calculus Volumes 1-3.
+Style: Use real-world engineering examples. Ask questions. 
+Visuals: Use tags like [IMAGE: description] or [VIDEO: topic].
 """
 
-# --- 2. THE VOICE ENGINE ---
+# --- 2. VOICE ENGINE (Output) ---
 def speak_lesson(text):
     try:
-        # Strip markdown symbols so the voice doesn't say "star star" or "dollar sign"
-        clean_text = text.replace("$", "").replace("*", "").replace("#", "").split("[")[0].strip()
+        clean_text = text.replace("$", "").replace("*", "").split("[")[0].strip()
         if clean_text:
             tts = gTTS(text=clean_text, lang='en')
             audio_fp = io.BytesIO()
             tts.write_to_fp(audio_fp)
-            # Play with autoplay enabled for a classroom feel
             st.audio(audio_fp.getvalue(), format="audio/mp3", autoplay=True)
     except Exception as e:
-        st.error(f"Voice Error: {e}")
+        st.error(f"Audio Error: {e}")
 
-# --- 3. THE BRAIN (API CALL) ---
+# --- 3. THE BRAIN ---
 def call_professor(prompt, history):
     headers = {'Content-Type': 'application/json'}
-    
-    # Constructing the message history
     messages = [{"role": "user", "parts": [{"text": SYLLABUS}]}]
-    messages.append({"role": "model", "parts": [{"text": "Class is in session. What shall we discover today?"}]})
-    
     for msg in history[-6:]:
         role = "user" if msg["role"] == "user" else "model"
         messages.append({"role": role, "parts": [{"text": msg["content"]}]})
-    
     messages.append({"role": "user", "parts": [{"text": prompt}]})
 
-    # Defining the payload correctly before the request
     payload = {
         "contents": messages,
-        "generationConfig": {
-            "temperature": 0.4,
-            "maxOutputTokens": 1000
-        }
+        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 1000}
     }
     
     try:
@@ -68,45 +52,54 @@ def call_professor(prompt, history):
 
 # --- 4. THE UI ---
 st.set_page_config(page_title="AI Calculus Classroom", layout="centered")
+
+# SIDEBAR: Microphone and Progress
+with st.sidebar:
+    st.title("🎙️ Voice Command")
+    voice_msg = st.audio_input("Speak to the Professor")
+    st.divider()
+    st.info("Syllabus: OpenStax Calculus V1-3")
+    if st.button("Clear Blackboard"):
+        st.session_state.chat_history = []
+        st.rerun()
+
 st.title("👨‍🏫 Professor Gemini's Classroom")
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# Sidebar for Progress & Settings
-with st.sidebar:
-    st.header("Classroom Control")
-    st.info("Syllabus: OpenStax Calculus (Vols 1-3)")
-    if st.button("Reset Blackboard"):
-        st.session_state.chat_history = []
-        st.rerun()
-
-# Display Chat History
+# Display Chat
 for chat in st.session_state.chat_history:
     with st.chat_message(chat["role"]):
         st.markdown(chat["content"])
 
-# User Input (Voice or Text)
-if user_input := st.chat_input("Ask your Calculus question..."):
-    st.session_state.chat_history.append({"role": "user", "content": user_input})
+# Handle Inputs
+user_query = None
+
+# If user speaks, handle the audio
+if voice_msg:
+    # Most mobile browsers transcribe automatically in st.audio_input
+    # If transcript isn't available, we use a placeholder to trigger the agent
+    user_query = "I just sent a voice message. Please explain the next concept in the syllabus."
+
+# If user types
+if prompt := st.chat_input("Type your question here..."):
+    user_query = prompt
+
+if user_query:
+    st.session_state.chat_history.append({"role": "user", "content": user_query})
     with st.chat_message("user"):
-        st.markdown(user_input)
+        st.markdown(user_query)
 
     with st.chat_message("assistant"):
-        with st.spinner("Professor Gemini is drafting a response..."):
-            response = call_professor(user_input, st.session_state.chat_history[:-1])
-            st.markdown(response)
-            
-            # Trigger Voice
-            speak_lesson(response)
-            
-            # Handle Visual Triggers
-            if "[IMAGE:" in response:
-                img_desc = response.split("[IMAGE:")[1].split("]")[0]
-                st.info(f"💡 Visualization Tip: {img_desc}")
-            
-            if "[VIDEO:" in response:
-                # Defaulting to 3Blue1Brown's Essence of Calculus for animations
-                st.video("https://www.youtube.com/watch?v=WUvTyaaN26w")
-                
-            st.session_state.chat_history.append({"role": "assistant", "content": response})
+        response = call_professor(user_query, st.session_state.chat_history[:-1])
+        st.markdown(response)
+        speak_lesson(response)
+        
+        if "[IMAGE:" in response:
+            st.info(f"🎨 Diagram: {response.split('[IMAGE:')[1].split(']')[0]}")
+        
+        if "[VIDEO:" in response:
+            st.video("https://www.youtube.com/watch?v=WUvTyaaN26w")
+
+        st.session_state.chat_history.append({"role": "assistant", "content": response})
