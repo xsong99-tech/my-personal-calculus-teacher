@@ -37,20 +37,15 @@ def speak_lesson(text):
 # --- 3. THE BRAIN (API CALL) ---
 def call_professor(prompt, history):
     headers = {'Content-Type': 'application/json'}
-    messages = [{"role": "user", "parts": [{"text": SYLLABUS}]}]
-    messages.append({"role": "model", "parts": [{"text": "Class is in session. What shall we discover today?"}]})
-    
-    for msg in history[-6:]:
-        role = "user" if msg["role"] == "user" else "model"
-        messages.append({"role": role, "parts": [{"text": msg["content"]}]})
-    
-    messages.append({"role": "user", "parts": [{"text": prompt}]})
-    payload = {"contents": messages, "generationConfig": {"temperature": 0.4}}
+    # ... (keep the messages part the same) ...
     
     response = requests.post(API_URL, headers=headers, json=payload)
+    
     if response.status_code == 200:
         return response.json()['candidates'][0]['content']['parts'][0]['text']
-    return "The Professor is temporarily unavailable. Check your API key."
+    else:
+        # This will tell you EXACTLY what is wrong (e.g., 401 = Wrong Key, 403 = Permission Denied)
+        return f"Error {response.status_code}: {response.text}"
 
 # --- 4. THE CLASSROOM UI ---
 st.set_page_config(page_title="AI Calculus Classroom", layout="centered")
