@@ -1,76 +1,84 @@
 import streamlit as st
 import requests
-import xml.etree.ElementTree as ET
-from google import genai
-from google.api_core import retry  # Added for 429 handling
+import json
+import time
 
 # --- 1. CONFIGURATION ---
-WOLFRAM_ID = st.secrets["WOLFRAM_ID"]
 GEMINI_KEY = st.secrets["GEMINI_KEY"]
+API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
 
-# Use 'flash-lite' for higher rate limits in 2026
-client = genai.Client(api_key=GEMINI_KEY)
-MODEL_ID = "gemini-2.0-flash-lite" 
+# --- 2. THE BOOK'S TEACHING BRAIN ---
+# We bake the 'Book's Knowledge' into the System Instruction
+BOOK_CONTEXT = """
+You are the 'OpenStax Calculus Tutor'. You follow the curriculum of Volumes 1, 2, and 3.
+TEACHING STYLE:
+1. NEVER solve the problem for the student.
+2. Use Socratic questioning: Ask 'What is the limit as x approaches a?' instead of giving the limit.
+3. Terminology: Use 'Difference Quotient' for derivatives, 'Riemann Sums' for integrals, and 'Partial Derivatives' for Calc 3.
+4. Analogies: Use the 'Speedometer' analogy for derivatives and the 'Area under a fence' for integrals.
+5. Progression: 
+   - Calc 1: Limits, Derivatives, Integrals.
+   - Calc 2: Sequences, Series, Integration Techniques.
+   - Calc 3: Vectors, Multivariable, Vector Fields.
+"""
 
-# --- 2. WOLFRAM ENGINE ---
-def get_wolfram_steps(query):
-    url = f"https://api.wolframalpha.com/v2/query?input=show+steps+{query}&appid={WOLFRAM_ID}&format=plaintext"
-    try:
-        response = requests.get(url, timeout=10)
-        root = ET.fromstring(response.text)
-        steps = [pod.find('.//plaintext').text for pod in root.findall('.//pod') 
-                 if 'step-by-step' in pod.get('title', '').lower() and pod.find('.//plaintext') is not None]
-        return "\n".join(steps) if steps else "Consulting conceptual logic..."
-    except Exception:
-        return "Verification engine offline."
+def call_gemini_agent(user_prompt, history):
+    headers = {'Content-Type': 'application/json'}
+    
+    # Construct the conversation with the 'Book Context' as the first message
+    messages = [{"role": "user", "parts": [{"text": BOOK_CONTEXT}]}]
+    messages.append({"role": "model", "parts": [{"text": "Understood. I am now the OpenStax Calculus Tutor. I will guide you step-by-step."}]})
+    
+    # Add conversation history
+    for msg in history[-5:]: # Send last 5 messages to save tokens
+        messages.append({"role": msg["role"], "parts": [{"text": msg["content"]}]})
+    
+    # Add current prompt
+    messages.append({"role": "user", "parts": [{"text": user_prompt}]})
 
-# --- 3. THE SMART RETRY FUNCTION ---
-# This fixes the 429 error by waiting and retrying automatically
-def safe_generate_content(prompt):
-    try:
-        response = client.models.generate_content(
-            model=MODEL_ID,
-            contents=prompt,
-            # This config tells the SDK to retry on 429/500 errors
-            config=genai.types.GenerateContentConfig(
-                max_output_tokens=500,
-                temperature=0.7
-            )
-        )
-        return response.text
-    except Exception as e:
-        if "429" in str(e):
-            return "⚠️ I'm thinking a bit too fast! Please wait 10 seconds and try your question again."
-        return f"An error occurred: {str(e)}"
+    payload = {
+        "contents": messages,
+        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1000}
+    }
 
-# --- 4. UI & LOOP ---
-st.set_page_config(page_title="Socratic Calc Tutor", page_icon="🎓")
-st.title("🎓 Socratic Calculus Agent")
+    # Retry logic for 429 Errors
+    for attempt in range(3):
+        response = requests.post(API_URL, headers=headers, json=payload)
+        if response.status_code == 200:
+            return response.json()['candidates'][0]['content']['parts'][0]['text']
+        elif response.status_code == 429:
+            time.sleep(2 ** attempt) # Wait longer each time
+        else:
+            return f"Error {response.status_code}: {response.text}"
+    return "The tutor is currently over-capacity. Please wait a moment."
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# --- 3. STREAMLIT UI ---
+st.set_page_config(page_title="Calculus AI Tutor", layout="wide")
+st.title("📚 Calculus 1-2-3 Socratic Tutor")
+st.sidebar.markdown("""
+### Your Textbook
+Grounded in **OpenStax Calculus**.
+- **Vol 1:** Basic Change
+- **Vol 2:** Infinite Series
+- **Vol 3:** 3D Space
+""")
 
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-if prompt := st.chat_input("I'm stuck on the Chain Rule..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
+# Display history
+for chat in st.session_state.chat_history:
+    with st.chat_message(chat["role"]):
+        st.markdown(chat["content"])
+
+# User Input
+if prompt := st.chat_input("Ask about Limits, Integrals, or Vectors..."):
+    st.session_state.chat_history.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
-    
-    with st.spinner("Analyzing with Wolfram Alpha & Gemini..."):
-        hidden_truth = get_wolfram_steps(prompt)
-        system_instruction = f"""
-        ROLE: Socratic Calculus Tutor.
-        TRUTH REFERENCE: {hidden_truth}
-        INSTRUCTION: Guide the student. Do not give the answer. 
-        Ask one probing question at a time.
-        """
-        
-        # Call the safe function that handles the 429 error
-        answer = safe_generate_content(f"{system_instruction}\nStudent: {prompt}")
-        
+
     with st.chat_message("assistant"):
-        st.markdown(answer)
-        st.session_state.messages.append({"role": "assistant", "content": answer})
+        with st.spinner("Consulting the textbook..."):
+            answer = call_gemini_agent(prompt, st.session_state.chat_history[:-1])
+            st.markdown(answer)
+            st.session_state.chat_history.append({"role": "model", "content": answer})
