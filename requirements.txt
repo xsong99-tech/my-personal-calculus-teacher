@@ -1,5 +1,1 @@
-streamlit
 requests
-matplotlib
-numpy
-pypdf
