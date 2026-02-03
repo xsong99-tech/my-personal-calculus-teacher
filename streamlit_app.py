@@ -2,129 +2,101 @@ import streamlit as st
 import requests
 import json
 import time
+from streamlit_tts import auto_play
 
-# --- 1. CONFIGURATION ---
+# --- 1. SETTINGS & SYLLABUS ---
 GEMINI_KEY = st.secrets["GEMINI_KEY"]
 API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
 
-# --- 2. THE AGENT'S BRAIN (SYSTEM INSTRUCTIONS) ---
-SYSTEM_INSTRUCTIONS = """
-You are the 'OpenStax Calculus Socratic Agent'. 
-YOUR MISSION: Guide students through Calculus 1, 2, and 3 using discovery-based learning.
-RULES:
-1. NEVER provide a final numerical answer or a full solved derivative/integral immediately.
-2. If a student is stuck, provide a HINT based on OpenStax definitions (e.g., 'Remember the definition of a limit as x approaches a').
-3. Use analogies: Compare derivatives to a car's speedometer and integrals to the area of a fence.
-4. Ask EXACTLY ONE probing question at the end of every response to keep the student thinking.
-5. Format all math in LaTeX using $ symbols, like $\frac{dy}{dx} = 2x$.
-6. **MULTIMODAL INSTRUCTION:**
-   - If a concept is highly visual (e.g., Riemann sums, 3D graphs, tangent lines), suggest an image. To do this, output exactly: 
-     <GENERATE_IMAGE: brief, clear description for the image generation model>
-     This tag MUST be on its own line.
-   - If a concept would benefit from a video explanation (e.g., Chain Rule animation, vector field flow), suggest a YouTube link. To do this, output exactly:
-     <EMBED_VIDEO: YouTube_URL_here>
-     This tag MUST be on its own line.
-   - Prioritize images for static concepts and videos for dynamic, animated concepts.
+# This prompt "programs" the agent's teaching personality and syllabus
+SYLLABUS_CONTEXT = """
+You are 'Professor Gemini', a Socratic Calculus Teacher following the OpenStax Calculus Syllabus (Vols 1, 2, 3).
+CLASSROOM RULES:
+1. NEVER give the student the final answer. Ask questions to lead them there.
+2. Ground explanations in REAL WORLD use (e.g., bridge engineering for derivatives, fluid dynamics for vectors).
+3. Use tags for visuals:
+   - [IMAGE: <description of a calculus diagram>]
+   - [VIDEO: <YouTube URL or topic>]
+4. Use Voice-friendly language (scannable, clear, not too many numbers at once).
+5. Always end with a Socratic question.
 """
 
-# --- 3. CORE AGENT LOGIC ---
-def call_calculus_agent(user_query, history):
+# --- 2. AGENT ENGINE ---
+def call_professor(query, history):
     headers = {'Content-Type': 'application/json'}
+    messages = [{"role": "user", "parts": [{"text": SYLLABUS_CONTEXT}]}]
+    messages.append({"role": "model", "parts": [{"text": "Class is in session. I am ready to follow the OpenStax syllabus. What is our first topic?"}]})
     
-    contents = []
-    contents.append({"role": "user", "parts": [{"text": f"SYSTEM: {SYSTEM_INSTRUCTIONS}"}]})
-    contents.append({"role": "model", "parts": [{"text": "Understood. I am your Socratic Calculus Tutor. How can I help you discover calculus today?"}]})
+    for msg in history[-6:]: # Maintain context of last 3 exchanges
+        messages.append({"role": "user" if msg["role"] == "user" else "model", "parts": [{"text": msg["content"]}]})
     
-    for chat in history[-6:]: 
-        contents.append({"role": "user" if chat["role"] == "user" else "model", 
-                         "parts": [{"text": chat["content"]}]})
-    
-    contents.append({"role": "user", "parts": [{"text": user_query}]})
+    messages.append({"role": "user", "parts": [{"text": query}]})
 
-    payload = {
-        "contents": contents,
-        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 800}
-    }
-
+    payload = {"contents": messages, "generationConfig": {"temperature": 0.4}}
+    
     for attempt in range(3):
-        try:
-            response = requests.post(API_URL, headers=headers, json=payload, timeout=15)
-            if response.status_code == 200:
-                result = response.json()
-                return result['candidates'][0]['content']['parts'][0]['text']
-            elif response.status_code == 429:
-                time.sleep(2 ** (attempt + 1)) 
-            else:
-                return f"⚠️ API Error ({response.status_code}). Please check your API key."
-        except Exception as e:
-            return f"⚠️ Connection Error: {str(e)}"
-    
-    return "⚠️ The tutor is busy. Please try again in 30 seconds."
+        response = requests.post(API_URL, headers=headers, json=payload)
+        if response.status_code == 200:
+            return response.json()['candidates'][0]['content']['parts'][0]['text']
+        elif response.status_code == 429:
+            time.sleep(2 ** attempt)
+    return "The professor is busy. Please try again in a moment."
 
-# --- 4. STREAMLIT INTERFACE ---
-st.set_page_config(page_title="Calculus Agent", page_icon="🎓")
-st.title("🎓 Socratic Calculus Agent")
-st.markdown("---")
+# --- 3. CLASSROOM UI ---
+st.set_page_config(page_title="AI Calculus Classroom", layout="wide")
+st.title("👨‍🏫 Professor Gemini's Calculus Classroom")
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# Sidebar Syllabus
+with st.sidebar:
+    st.header("OpenStax Syllabus")
+    st.caption("Volume 1: Limits & Derivatives")
+    st.caption("Volume 2: Integration & Series")
+    st.caption("Volume 3: Multivariable & Vectors")
+    st.divider()
+    audio_query = st.audio_input("Ask a question with your voice")
 
-# Display conversation
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-        if message.get("image_description"):
-            st.markdown("Generating image based on AI's suggestion:")
-            # Here, we output the special tag to trigger my image generation ability
-            # In a real app, you would send this description to an image generation API
-            st.markdown(f"**Image Request:** {message['image_description']}")
-            
-        if message.get("video_url"):
-            st.markdown("Embedding video based on AI's suggestion:")
-            st.video(message["video_url"])
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-# User interaction
-if prompt := st.chat_input("Ex: Explain a tangent line with an image."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
+# Display Lesson History
+for chat in st.session_state.chat_history:
+    with st.chat_message(chat["role"]):
+        st.markdown(chat["content"])
+
+# Handle Input (Voice or Text)
+user_msg = None
+if audio_query:
+    user_msg = "Explain the visual intuition of a limit." # In a full app, you'd add Whisper STT here
+if prompt := st.chat_input("Ex: Why do we use the chain rule in rocket science?"):
+    user_msg = prompt
+
+if user_msg:
+    st.session_state.chat_history.append({"role": "user", "content": user_msg})
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.markdown(user_msg)
 
-    # Get AI response
     with st.chat_message("assistant"):
-        with st.spinner("Tutor is consulting the textbook and preparing visuals..."):
-            response_text = call_calculus_agent(prompt, st.session_state.messages[:-1])
+        with st.spinner("Professor is preparing the lesson..."):
+            response = call_professor(user_msg, st.session_state.chat_history[:-1])
             
-            # --- PARSE FOR MULTIMODAL TAGS ---
-            processed_response = response_text
-            image_description = None
-            video_url = None
-
-            # Check for image tag
-            if "<GENERATE_IMAGE:" in response_text:
-                start = response_text.find("<GENERATE_IMAGE:") + len("<GENERATE_IMAGE:")
-                end = response_text.find(">", start)
-                if end != -1:
-                    image_description = response_text[start:end].strip()
-                    processed_response = response_text.replace(f"<GENERATE_IMAGE:{image_description}>", "").strip()
+            # 1. Clean response for Voice (strip tags)
+            clean_text = response.split("[")[0].strip()
             
-            # Check for video tag
-            if "<EMBED_VIDEO:" in response_text:
-                start = response_text.find("<EMBED_VIDEO:") + len("<EMBED_VIDEO:")
-                end = response_text.find(">", start)
-                if end != -1:
-                    video_url = response_text[start:end].strip()
-                    processed_response = processed_response.replace(f"<EMBED_VIDEO:{video_url}>", "").strip()
-
-            st.markdown(processed_response) # Display text first
-
-            if image_description:
-                st.session_state.messages.append({"role": "assistant", "content": processed_response, "image_description": image_description})
-                st.markdown(f"**Image Request:** {image_description}")
-                # Trigger my internal image generation
+            # 2. Display text
+            st.markdown(response)
+            
+            # 3. Audio Lesson
+            auto_play(clean_text, lang='en')
+            
+            # 4. Trigger Visuals
+            if "[IMAGE:" in response:
+                img_query = response.split("[IMAGE:")[1].split("]")[0]
+                st.info(f"🎨 Diagram: {img_query}")
+                # Use a specific image tag for fetching
+                st.write("")
                 
-            if video_url:
-                st.session_state.messages.append({"role": "assistant", "content": processed_response, "video_url": video_url})
-                st.video(video_url)
+            if "[VIDEO:" in response:
+                video_url = response.split("[VIDEO:")[1].split("]")[0]
+                st.video("https://www.youtube.com/watch?v=WUvTyaaN26w") # Standard example
                 
-            if not image_description and not video_url: # If no multimodal content, just store the text
-                 st.session_state.messages.append({"role": "assistant", "content": processed_response})
+            st.session_state.chat_history.append({"role": "assistant", "content": response})
